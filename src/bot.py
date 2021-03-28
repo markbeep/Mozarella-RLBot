@@ -7,6 +7,7 @@ from util.boost_pad_tracker import BoostPadTracker
 from util.drive import steer_toward_target
 from util.sequence import Sequence, ControlStep
 from util.vec import Vec3
+from util.orientation import Orientation, relative_location
 
 
 class MyBot(BaseAgent):
@@ -45,16 +46,16 @@ class MyBot(BaseAgent):
         # By default we will chase the ball, but target_location can be changed later
         target_location = ball_location
 
-        if car_location.dist(ball_location) > 1500:
-            # We're far away from the ball, let's try to lead it a little bit
-            ball_prediction = self.get_ball_prediction_struct()  # This can predict bounces, etc
-            ball_in_future = find_slice_at_time(ball_prediction, packet.game_info.seconds_elapsed + 2)
+        ball_prediction = self.get_ball_prediction_struct()  # This can predict bounces, etc
+        # dynamic time to the ball depending on the car's speed
+        time_in_future = self.time_to_ball(car_location, car_velocity.length(), ball_location)
+        ball_in_future = find_slice_at_time(ball_prediction, packet.game_info.seconds_elapsed + time_in_future)
 
-            # ball_in_future might be None if we don't have an adequate ball prediction right now, like during
-            # replays, so check it to avoid errors.
-            if ball_in_future is not None:
-                target_location = Vec3(ball_in_future.physics.location)
-                self.renderer.draw_line_3d(ball_location, target_location, self.renderer.cyan())
+        # ball_in_future might be None if we don't have an adequate ball prediction right now, like during
+        # replays, so check it to avoid errors.
+        if ball_in_future is not None:
+            target_location = Vec3(ball_in_future.physics.location)
+            self.renderer.draw_line_3d(ball_location, target_location, self.renderer.cyan())
 
         # Draw some things to help understand what the bot is thinking
         self.renderer.draw_line_3d(car_location, target_location, self.renderer.white())
@@ -65,12 +66,41 @@ class MyBot(BaseAgent):
             # We'll do a front flip if the car is moving at a certain speed.
             return self.begin_front_flip(packet)
 
+        orientation = Orientation(my_car.physics.rotation)
+        relative = relative_location(car_location, orientation, target_location)
+        self.renderer.draw_string_3d(car_location, 1, 1, f'\nForward: {relative}', self.renderer.white())
+
         controls = SimpleControllerState()
         controls.steer = steer_toward_target(my_car, target_location)
         controls.throttle = 1.0
         # You can set more controls if you want, like controls.boost.
 
+        # drift around
+        if relative.x < -400:
+            controls.handbrake = True
+
+        # jump if another car is close
+        if self.location_to_nearest_car(car_location, my_car.team, packet) < 200 and car_velocity.length() < 50:
+            controls.jump = True
+
         return controls
+
+    def location_to_nearest_car(self, car_location, team, packet, enemy=False):
+        # If enemy is true, only view nearest enemy cars
+        nearest_distance = 999999
+        for car in packet.game_cars:
+            if car.team == team:
+                continue
+            other_car = Vec3(car.physics.location)
+            distance_to = car_location.dist(other_car)
+            if distance_to < nearest_distance:
+                nearest_distance = distance_to
+        return nearest_distance
+
+    def time_to_ball(self, car_location, car_speed, ball_location):
+        # estimates a time it takes for the bot to reach the ball for it to better predict where to go to hit the ball
+        distance = car_location.dist(ball_location)
+        return distance/car_speed
 
     def begin_front_flip(self, packet):
         # Send some quickchat just for fun
