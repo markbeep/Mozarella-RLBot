@@ -2,7 +2,7 @@ from rlbot.agents.base_agent import BaseAgent, SimpleControllerState
 from rlbot.messages.flat.QuickChatSelection import QuickChatSelection
 from rlbot.utils.structures.game_data_struct import GameTickPacket
 
-from util.ball_prediction_analysis import find_slice_at_time
+from util.ball_prediction_analysis import find_slice_at_time, find_matching_slice
 from util.boost_pad_tracker import BoostPadTracker
 from util.drive import steer_toward_target
 from util.sequence import Sequence, ControlStep
@@ -50,72 +50,114 @@ class MyBot(BaseAgent):
 
         # By default we will chase the ball, but target_location can be changed later
         target_location = ball_location
+        ball_on_floor = target_location
 
         ball_prediction = self.get_ball_prediction_struct()  # This can predict bounces, etc
         # dynamic time to the ball depending on the car's speed
         time_in_future = self.time_to_ball(car_location, car_velocity.length(), ball_location)
-        ball_in_future = find_slice_at_time(ball_prediction, packet.game_info.seconds_elapsed + time_in_future)
+        seconds_in_future = packet.game_info.seconds_elapsed + time_in_future
+        ball_in_future = find_slice_at_time(ball_prediction, seconds_in_future)
+        ball_on_floor = find_matching_slice(ball_prediction, 0, lambda s: s.physics.location.z < 150 and s.game_seconds >= packet.game_info.seconds_elapsed + time_in_future, search_increment=1)
+        time_to_floor = 0
 
         # ball_in_future might be None if we don't have an adequate ball prediction right now, like during
         # replays, so check it to avoid errors.
         if ball_in_future is not None:
             target_location = Vec3(ball_in_future.physics.location)
+            time_in_future = self.time_to_ball(car_location, car_velocity.length(), target_location)
             self.renderer.draw_line_3d(ball_location, target_location, self.renderer.cyan())
+
+        # gets the next time when the ball is on the floor
+        if ball_on_floor is not None:
+            floor_location = Vec3(ball_on_floor.physics.location)
+            time_to_floor = ball_on_floor.game_seconds - packet.game_info.seconds_elapsed
+            self.renderer.draw_line_3d(ball_location, floor_location, self.renderer.orange())
+            self.renderer.draw_rect_3d(floor_location, 8, 8, True, self.renderer.orange(), centered=True)
 
         # Draw some things to help understand what the bot is thinking
         self.renderer.draw_line_3d(car_location, target_location, self.renderer.white())
         self.renderer.draw_rect_3d(target_location, 8, 8, True, self.renderer.cyan(), centered=True)
 
         orientation = Orientation(my_car.physics.rotation)
-        relative = relative_location(car_location, orientation, target_location)
+        relative = relative_location(car_location, orientation, ball_location)
 
         controls = SimpleControllerState()
 
         # jump if another car is close to not get stuck
-        if self.location_to_nearest_car(car_location, my_car.team, packet) < 200 and car_velocity.length() < 50:
+        if self.location_to_nearest_car(car_location, my_car.team, packet).dist(car_location) < 200 and car_velocity.length() < 50:
             controls.jump = True
 
-        self.decide_state(controls, packet, my_car, car_location, car_velocity, ball_location, ball_velocity, target_location, ball_prediction, orientation, relative)
+        self.decide_state(controls, packet, my_car, car_location, car_velocity, ball_location, ball_velocity, target_location, ball_prediction, orientation, relative, time_in_future, time_to_floor)
 
         return controls
 
-    def decide_state(self, controls, packet, my_car, car_location, car_velocity, ball_location, ball_velocity, target_location, ball_prediction, orientation, relative):
+    def decide_state(self, controls, packet, my_car, car_location, car_velocity, ball_location, ball_velocity, target_location, ball_prediction, orientation, relative, time_to_target, time_to_floor):
         if self.bot_state == 0:
-            self.ball_chase(controls, packet, my_car, car_velocity, car_location, target_location, ball_location, relative)
+            self.ball_chase(controls, packet, my_car, car_velocity, car_location, target_location, ball_location, relative, time_to_target, time_to_floor)
         elif self.bot_state == 1:
             self.retreat_to_goal(controls, packet, my_car, car_location)
+        elif self.bot_state == 2:
+            self.go_towards_own_goal(controls, my_car, car_location, ball_location)
 
-    def ball_chase(self, controls, packet, my_car, car_velocity, car_location, target_location, ball_location, relative):
-        self.renderer.draw_string_3d(car_location, 1, 1, "\nBall chasing", self.renderer.red())
+    def ball_chase(self, controls, packet, my_car, car_velocity, car_location, target_location, ball_location, relative, time_to_target, time_to_floor):
+        """
+        Makes the bot chase the ball unless some conditions are valid
+        """
 
         # retreat to own goal if the ball is a lot closer to our goal than we are
         info = self.get_field_info()
         own_goal_vec = info.goals[self.team].location
         own_goal_location = Vec3(own_goal_vec)
-        enemy_goal_vec = info.goals[(self.team+1) % 2].location
-        enemy_goal_location = Vec3(enemy_goal_vec)
-        if ball_location.dist(own_goal_location) + 1000 < car_location.dist(own_goal_location):
-            self.bot_state = 1
 
-        self.renderer.draw_string_3d(ball_location, 1, 1, f"X: {ball_location.x} | Y {ball_location.y}", self.renderer.white())
+        if ball_location.dist(own_goal_location) + 1000 < car_location.dist(own_goal_location) and car_location.dist(own_goal_location) > 3000:
+            self.bot_state = 1
+            return
+        elif own_goal_vec.y > 5000 and car_location.y < target_location.y:  # if shooting towards goal in negative y
+            self.bot_state = 2
+            return
+        elif own_goal_vec.y < -5000 and car_location.y > target_location.y:  # if shooting towards goal in positive y
+            self.bot_state = 2
+            return
+        """elif ball_location.dist(self.location_to_nearest_car(ball_location, self.team, packet, True)) + 1000 < ball_location.dist(car_location):
+            # If a car is a lot closer to the ball than you are, just retreat
+            self.bot_state = 1
+            return"""
+
+        self.renderer.draw_string_3d(car_location, 1, 1, "\nBall chasing", self.renderer.red())
 
         # makes the bots shoot towards the goal
         target_location = self.ball_towards_goal_location(target_location, own_goal_location, car_location, ball_location)
         self.renderer.draw_rect_3d(target_location, 8, 8, True, self.renderer.red(), centered=True)
         self.renderer.draw_line_3d(car_location, target_location, self.renderer.red())
 
+        print(f"{time_to_target} | {time_to_floor}")
+
         controls.steer = steer_toward_target(my_car, target_location)
-        controls.throttle = 1.0
+        if time_to_floor > 0 and time_to_target / time_to_floor < 0.9:
+            self.renderer.draw_string_3d(car_location, 1, 1, "\n\nSLOWING DOWN", self.renderer.white())
+            controls.throttle = time_to_target / time_to_floor * 0.4
+            self.renderer.draw_string_3d(car_location, 1, 1, f"\n\n\nTHROTTLE {controls.throttle}", self.renderer.white())
+            if self.time_to_ball(car_location, car_velocity.length(), target_location) > time_to_floor:
+                controls.throttle = -1
+                self.renderer.draw_string_3d(car_location, 1, 1, f"\n\n\n\nHANDBRAKE ON", self.renderer.white())
+        else:
+            controls.throttle = 1.0
+            # boost
+            if abs(relative.y) < 500 and not my_car.is_super_sonic:
+                controls.boost = True
         # You can set more controls if you want, like controls.boost.
 
         # drift around
         if relative.x < -200:
             controls.handbrake = True
-        elif 1000 < car_velocity.length() and abs(relative.y) < 15 and relative.x < 450 and relative.z < 100:
+        elif 1000 < car_velocity.length() and abs(relative.y) < 100 and relative.x < 350 and relative.z < 100:
             # We'll do a front flip if the car is moving at a certain speed.
             return self.begin_front_flip(packet)
 
     def retreat_to_goal(self, controls, packet, my_car, car_location):
+        """
+        Makes the bot retreat back to the goal and only change back to another state when it's close to the goal
+        """
         self.renderer.draw_string_3d(car_location, 1, 1, "\nRetreating to goal", self.renderer.red())
         info = self.get_field_info()
         own_goal_vec = info.goals[self.team].location
@@ -123,13 +165,18 @@ class MyBot(BaseAgent):
         controls.steer = steer_toward_target(my_car, own_goal_location)
         controls.throttle = 1.0
 
-        self.renderer.draw_string_3d(car_location, 1, 1, f"X: {own_goal_location.x} | Y {own_goal_location.y}", self.renderer.white())
+        if not my_car.is_super_sonic:
+            controls.boost = True
 
         # change back to ball chasing if distance to goal is small
-        if car_location.dist(own_goal_location) < 2000:
+        self.renderer.draw_string_3d(car_location, 1, 1, f"\n\nDist to goal {car_location.dist(own_goal_location)}", self.renderer.white())
+        if car_location.dist(own_goal_location) < 3000:
             self.bot_state = 0
 
     def go_towards_own_goal(self, controls, my_car, car_location, ball_location):
+        """
+        Goes towards own goal and changes back to ball chasing when a bit away from the ball
+        """
         self.renderer.draw_string_3d(car_location, 1, 1, "\nGoing towards own goal", self.renderer.red())
         info = self.get_field_info()
         own_goal_vec = info.goals[self.team].location
@@ -137,46 +184,51 @@ class MyBot(BaseAgent):
         controls.steer = steer_toward_target(my_car, own_goal_location)
         controls.throttle = 1.0
 
+        if not my_car.is_super_sonic:
+            controls.boost = True
+
         # goes back to ball chase state if far enough away from the ball
-        if car_location.dist(ball_location) > 1000 or car_location.dist(own_goal_location) < 2000:
+        if car_location.dist(ball_location) > 400 or car_location.dist(own_goal_location) < 3000:
             self.bot_state = 0
 
     def ball_towards_goal_location(self, target_location, goal_location, car_location, ball_location):
-        slope = (goal_location.y - target_location.y) / (goal_location.x - target_location.x + 0.01)
-        x_value = -1
-        if target_location.x - goal_location.x < 0:
-            x_value = 1
-        """print("############")
-        print("GOAL LOCATION")
-        print(f"X: {goal_location.x}")
-        print(f"Y: {goal_location.y}")
-        print("############")
-        print("Target LOCATION")
-        print(f"X: {target_location.x}")
-        print(f"Y: {target_location.y}")
-        print("############")"""
+        """
+        Modifies the target location so that the ball is hit a bit more towards the enemy goal
+        """
+        enemy_goal_location = Vec3(0, -goal_location.y, goal_location.z)
+
+        if target_location.x - enemy_goal_location.x == 0:
+            target_location.x = 1
+            if goal_location.y < 0:  # usually for blue side
+                target_location.x = -1
+        slope = (target_location.y - enemy_goal_location.y) / (target_location.x - enemy_goal_location.x)
 
         # angle from goal
         dist_from_x = abs(goal_location.x - target_location.x)
-
-        self.renderer.draw_string_3d(car_location, 1, 1, f"\n\nDist {dist_from_x}", self.renderer.white())
-        self.renderer.draw_string_3d(car_location, 1, 1, f"\n\n\nDist {target_location.y}", self.renderer.white())
 
         add = 0
         if target_location.y == 0:
             add = 1
         angle = 90 - abs(math.degrees(math.atan(dist_from_x / (target_location.y + add))))
-        self.renderer.draw_string_3d(car_location, 1, 1, f"Angle {angle}", self.renderer.cyan())
+        #self.renderer.draw_string_3d(car_location, 1, 1, f"Angle {angle}", self.renderer.cyan())
 
-        CORRECTION = 150
+        CORRECTION = 120
+
+        x_value = 1
+        if target_location.x < 0:
+            x_value = -1
+
         new_target_location = Vec3(1, slope, 0).normalized()
         return target_location + x_value * CORRECTION*new_target_location
 
-
-
     def location_to_nearest_car(self, car_location, team, packet, enemy=False):
+        """
+        Gets the closest enemy car to a target location
+        """
+
         # If enemy is true, only view nearest enemy cars
         nearest_distance = 999999
+        nearest_car = None
         for car in packet.game_cars:
             if car.team == team:
                 continue
@@ -184,7 +236,8 @@ class MyBot(BaseAgent):
             distance_to = car_location.dist(other_car)
             if distance_to < nearest_distance:
                 nearest_distance = distance_to
-        return nearest_distance
+                nearest_car = other_car
+        return nearest_car
 
     def time_to_ball(self, car_location, car_speed, ball_location):
         # estimates a time it takes for the bot to reach the ball for it to better predict where to go to hit the ball
