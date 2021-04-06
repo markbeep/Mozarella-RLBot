@@ -142,13 +142,13 @@ class MyBot(BaseAgent):
         own_goal_vec = info.goals[self.team].location
         own_goal_location = Vec3(own_goal_vec)
 
-        if ball_location.dist(own_goal_location) + 1000 < car_location.dist(own_goal_location) and car_location.dist(own_goal_location) > 3000:
+        if ball_location.dist(own_goal_location) + 1000 < car_location.dist(own_goal_location) and car_location.dist(own_goal_location) > 4000:
             self.bot_state = 1
             return
-        elif own_goal_vec.y > 5000 and car_location.y < target_location.y:  # if shooting towards goal in negative y
+        elif own_goal_vec.y > 5000 and car_location.y + 100 < target_location.y:  # BLUE
             self.bot_state = 2
             return
-        elif own_goal_vec.y < -5000 and car_location.y > target_location.y:  # if shooting towards goal in positive y
+        elif own_goal_vec.y < -5000 and car_location.y > target_location.y + 100:  # ORANGE
             self.bot_state = 2
             return
 
@@ -168,7 +168,7 @@ class MyBot(BaseAgent):
         angle = math.degrees(orientation.forward.ang_to(car_to_ball))
 
         # boost
-        if angle < 90 and not my_car.is_super_sonic:
+        if angle < 20 and not my_car.is_super_sonic:
             controls.boost = True
 
         # try to turn around quickly
@@ -205,7 +205,7 @@ class MyBot(BaseAgent):
 
         # change back to ball chasing if distance to goal is small
         self.renderer.draw_string_3d(car_location, 1, 1, f"\n\nDist to goal {car_location.dist(own_goal_location)}", self.renderer.white())
-        if car_location.dist(own_goal_location) < 3000:
+        if car_location.dist(own_goal_location) < 4000:
             self.bot_state = 0
 
     def go_towards_own_goal(self, controls, my_car, car_location, ball_location):
@@ -220,7 +220,7 @@ class MyBot(BaseAgent):
         controls.throttle = 1.0
 
         # goes back to ball chase state if far enough away from the ball
-        if car_location.dist(ball_location) > 1000 or car_location.dist(own_goal_location) < 3000:
+        if car_location.dist(ball_location) > 1000 or car_location.dist(own_goal_location) < 4000:
             self.bot_state = 0
 
     def jump_shot(self, controls, car_location, ball_location):
@@ -238,14 +238,20 @@ class MyBot(BaseAgent):
                 target_location.x = -1
         slope = (target_location.y - enemy_goal_location.y) / (target_location.x - enemy_goal_location.x)
 
-        CORRECTION = 120
+        dist = car_location.dist(target_location)
+        if dist > 3000:
+            correction = 1000
+        elif 500 < dist <= 3000:
+            correction = 0.36 * dist - 80
+        else:
+            correction = 100
 
         x_value = 1
         if target_location.x < 0:
             x_value = -1
 
         new_target_location = Vec3(1, slope, 0).normalized()
-        return target_location + x_value * CORRECTION * new_target_location
+        return target_location + x_value * correction * new_target_location
 
     def location_to_nearest_car(self, car_location, team, packet, enemy=False):
         """
