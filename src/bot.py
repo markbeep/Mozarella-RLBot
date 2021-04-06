@@ -83,9 +83,23 @@ class MyBot(BaseAgent):
 
         controls = SimpleControllerState()
 
+        # makes the car rotate to be more straight
+        if not my_car.has_wheel_contact:
+            if orientation.roll < -0.1:
+                controls.roll = 0.5
+            elif orientation.roll > 0.1:
+                controls.roll = -0.5
+
+            if orientation.pitch < -0.1:
+                controls.pitch = 0.5
+            elif orientation.pitch > 0.1:
+                controls.pitch = -0.5
+
         # jump if another car is close to not get stuck
         if self.location_to_nearest_car(car_location, my_car.team, packet).dist(car_location) < 200 and car_velocity.length() < 50:
             controls.jump = True
+
+        self.set_kickoff_state(car_velocity, ball_location, ball_velocity)
 
         self.decide_state(controls, packet, my_car, car_location, car_velocity, ball_location, ball_velocity, target_location, ball_prediction, orientation, relative, time_in_future, time_to_floor)
 
@@ -93,13 +107,22 @@ class MyBot(BaseAgent):
 
     def decide_state(self, controls, packet, my_car, car_location, car_velocity, ball_location, ball_velocity, target_location, ball_prediction, orientation, relative, time_to_target, time_to_floor):
         if self.bot_state == 0:
-            self.ball_chase(controls, packet, my_car, car_velocity, car_location, target_location, ball_location, relative, time_to_target, time_to_floor)
+            self.ball_chase(controls, packet, my_car, car_velocity, car_location, target_location, ball_location, relative, time_to_target, time_to_floor, orientation)
         elif self.bot_state == 1:
             self.retreat_to_goal(controls, packet, my_car, car_location)
         elif self.bot_state == 2:
             self.go_towards_own_goal(controls, my_car, car_location, ball_location)
+        elif self.bot_state == 3:
+            self.kickoff()
 
-    def ball_chase(self, controls, packet, my_car, car_velocity, car_location, target_location, ball_location, relative, time_to_target, time_to_floor):
+    def set_kickoff_state(self, car_velocity, ball_location, ball_velocity):
+        if car_velocity.length() == 0 and ball_location.x == 0 and ball_location.y == 0 and ball_velocity.length() == 0:
+            self.bot_state = 3
+
+    def kickoff(self):
+        self.bot_state = 0
+
+    def ball_chase(self, controls, packet, my_car, car_velocity, car_location, target_location, ball_location, relative, time_to_target, time_to_floor, orientation):
         """
         Makes the bot chase the ball unless some conditions are valid
         """
@@ -130,8 +153,6 @@ class MyBot(BaseAgent):
         self.renderer.draw_rect_3d(target_location, 8, 8, True, self.renderer.red(), centered=True)
         self.renderer.draw_line_3d(car_location, target_location, self.renderer.red())
 
-        print(f"{time_to_target} | {time_to_floor}")
-
         controls.steer = steer_toward_target(my_car, target_location)
         if time_to_floor > 0 and time_to_target / time_to_floor < 0.9:
             self.renderer.draw_string_3d(car_location, 1, 1, "\n\nSLOWING DOWN", self.renderer.white())
@@ -147,9 +168,16 @@ class MyBot(BaseAgent):
                 controls.boost = True
         # You can set more controls if you want, like controls.boost.
 
-        # drift around
-        if relative.x < -200:
-            controls.handbrake = True
+        # angle to ball
+        car_to_ball = Vec3(ball_location.x - car_location.x, ball_location.y - car_location.y, ball_location.z - car_location.z)
+        angle = abs(math.degrees(orientation.forward.ang_to(car_to_ball)))
+        self.renderer.draw_string_2d(10, 10 + self.team * 100, 5, 5, f"{round(angle)}", self.renderer.team_color())
+
+        # try to turn around quickly
+        if angle > 160 and relative.x < -2000:
+            self.begin_half_flip(packet)
+        elif angle > 90:
+            controls.handbreak = True
         elif 1000 < car_velocity.length() and abs(relative.y) < 100 and relative.x < 350 and relative.z < 100:
             # We'll do a front flip if the car is moving at a certain speed.
             return self.begin_front_flip(packet)
@@ -188,7 +216,7 @@ class MyBot(BaseAgent):
             controls.boost = True
 
         # goes back to ball chase state if far enough away from the ball
-        if car_location.dist(ball_location) > 400 or car_location.dist(own_goal_location) < 3000:
+        if car_location.dist(ball_location) > 1000 or car_location.dist(own_goal_location) < 3000:
             self.bot_state = 0
 
     def ball_towards_goal_location(self, target_location, goal_location, car_location, ball_location):
@@ -244,10 +272,20 @@ class MyBot(BaseAgent):
         distance = car_location.dist(ball_location)
         return distance/(car_speed+0.01)
 
-    def begin_front_flip(self, packet):
-        # Send some quickchat just for fun
-        self.send_quick_chat(team_only=False, quick_chat=QuickChatSelection.Information_IGotIt)
+    def begin_half_flip(self, packet):
+        self.active_sequence = Sequence([
+            ControlStep(duration=0.15, controls=SimpleControllerState(throttle=-1, boost=False)),
+            ControlStep(duration=0.1, controls=SimpleControllerState(jump=True)),
+            ControlStep(duration=0.05, controls=SimpleControllerState(jump=False)),
+            ControlStep(duration=0.2, controls=SimpleControllerState(jump=True, pitch=1)),
+            ControlStep(duration=0.15, controls=SimpleControllerState(pitch=-1, boost=False)),
+            ControlStep(duration=0.5, controls=SimpleControllerState(pitch=-1, boost=True, roll=1, throttle=1)),
+            ControlStep(duration=0.5, controls=SimpleControllerState()),
+        ])
 
+        return self.active_sequence.tick(packet)
+
+    def begin_front_flip(self, packet):
         # Do a front flip. We will be committed to this for a few seconds and the bot will ignore other
         # logic during that time because we are setting the active_sequence.
         self.active_sequence = Sequence([
