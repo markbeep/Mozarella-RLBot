@@ -83,6 +83,8 @@ class MyBot(BaseAgent):
 
         controls = SimpleControllerState()
 
+        self.renderer.draw_string_2d(10, 10 + self.team * 100, 5, 5, f"{controls.throttle}", self.renderer.team_color())
+
         # makes the car rotate to be more straight
         if not my_car.has_wheel_contact:
             # roll to land on all four wheels
@@ -144,13 +146,10 @@ class MyBot(BaseAgent):
 
         if ball_location.dist(own_goal_location) + 1000 < car_location.dist(own_goal_location) and car_location.dist(own_goal_location) > 4000:
             self.bot_state = 1
-            return
         elif own_goal_vec.y > 5000 and car_location.y + 100 < target_location.y:  # BLUE
             self.bot_state = 2
-            return
         elif own_goal_vec.y < -5000 and car_location.y > target_location.y + 100:  # ORANGE
             self.bot_state = 2
-            return
 
         self.renderer.draw_string_3d(car_location, 1, 1, "\nBall chasing", self.renderer.red())
 
@@ -172,13 +171,10 @@ class MyBot(BaseAgent):
             controls.boost = True
 
         # try to turn around quickly
-        self.renderer.draw_string_2d(10, 10 + self.team * 100, 5, 5, f"{angle}", self.renderer.team_color())
         if angle > 160 and relative.x < -2000:
             self.begin_half_flip(packet)
-        elif angle > 30:
-            controls.handbreak = True
-            controls.throttle = 0.7
-            self.renderer.draw_string_3d(car_location, 1, 1, "\n\nDRIFTING", self.renderer.white())
+        elif angle > 40:
+            controls.handbrake = True
         elif 1000 < car_velocity.length() and angle < 90 and car_to_ball.length() < 400 and relative.z < 200:
             # We'll do a front flip if the car is moving at a certain speed.
             return self.begin_front_flip(packet, angle, orientation.right.length())
@@ -296,7 +292,6 @@ class MyBot(BaseAgent):
         if right < 0:
             mult = -1
         rad = math.radians(0)  # set to 0 for now
-        print(rad)
         self.active_sequence = Sequence([
             ControlStep(duration=0.05, controls=SimpleControllerState(jump=True)),
             ControlStep(duration=0.05, controls=SimpleControllerState(jump=False)),
