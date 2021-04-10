@@ -1,5 +1,5 @@
-# RLBotPythonExample
-Example of a Python bot using the RLBot framework
+# Mozerella RL Bot
+My adaptation of the example bot.
 
 ## Quick Start
 The easiest way to start a Python bot is demonstrated here!
